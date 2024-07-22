@@ -70,6 +70,116 @@ FROM TopScoresCTE
 WHERE ScoreRank <= 3
 ORDER BY Dev_ID, ScoreRank;
 
+--8. Find the `first_login` datetime for each device ID.
+SELECT Dev_ID, MIN(TimeStamp) As FirstLogin
+FROM [Game Analysis].DBO.level_details2$
+GROUP BY Dev_ID;
+
+--9. Find the top 5 scores based on each difficulty level and rank them in increasing order 
+--using `Rank`. Display `Dev_ID` as well. 
+WITH RankedScores AS (
+    SELECT lev.Dev_ID, lev.Score, lev.Difficulty,
+    RANK() OVER (PARTITION BY lev.Difficulty ORDER BY lev.score DESC) AS Rank
+    FROM [Game Analysis].dbo.level_details2$ lev
+)
+SELECT rs.Dev_ID,rs.score,rs.difficulty,rs.Rank
+FROM RankedScores rs
+WHERE rs.Rank <= 5
+ORDER BY rs.difficulty ASC, rs.Rank ASC;
+
+--10. Find the device ID that is first logged in (based on `start_datetime`) for each player 
+--(`P_ID`). Output should contain player ID, device ID, and first login datetime. 
+
+WITH RankedLogins AS (
+    SELECT P_ID,Dev_ID,TimeStamp,
+    ROW_NUMBER() OVER (PARTITION BY P_ID ORDER BY TimeStamp ASC) AS LoginRank
+    FROM [Game Analysis].DBO.level_details2$ 
+)
+SELECT P_ID,Dev_ID,TimeStamp AS first_login_datetime
+FROM RankedLogins
+WHERE LoginRank = 1;
+
+--11. For each player and date, determine how many `kill_counts` were played by the player 
+--so far. 
+--a) Using window functions 
+SELECT P_ID, TimeStamp,kill_count,
+    SUM(kill_count) OVER (PARTITION BY P_ID ORDER BY TimeStamp) AS total_kill_count_so_far
+FROM [Game Analysis].DBO.level_details2$
+ORDER BY P_ID,TimeStamp;
+
+
+--b) Without window functions 
+SELECT lev.P_ID, lev.TimeStamp,lev.kill_count,
+    (SELECT SUM(lev.kill_count)
+        FROM [Game Analysis].DBO.level_details2$ lev
+        WHERE lev.P_ID = lev.P_ID
+        AND lev.TimeStamp <= lev.TimeStamp
+    ) AS total_kill_count_so_far
+FROM [Game Analysis].DBO.level_details2$ lev
+ORDER BY lev.P_ID, lev.TimeStamp;
+
+--12. Find the cumulative sum of stages crossed over `start_datetime` for each `P_ID`, 
+--excluding the most recent `start_datetime`.
+
+WITH CumulativeStages AS (
+    SELECT P_ID, TimeStamp,Stages_crossed,
+        SUM(Stages_crossed) OVER (PARTITION BY P_ID ORDER BY TimeStamp) AS CumulativeStagesCrossed,
+        ROW_NUMBER() OVER (PARTITION BY P_ID ORDER BY TimeStamp DESC) AS rn
+    FROM [Game Analysis].DBO.level_details2$
+)
+SELECT P_ID,TimeStamp,
+    CumulativeStagesCrossed - COALESCE(LEAD(Stages_crossed) OVER (PARTITION BY P_ID ORDER BY TimeStamp DESC), 0) AS CumulativeStagesCrossed
+FROM CumulativeStages
+WHERE rn > 1
+ORDER BY P_ID, TimeStamp;
+
+--13. Extract the top 3 highest sums of scores for each Dev_ID and the corresponding P_ID.
+WITH RankedScores AS (
+    SELECT Dev_ID,P_ID,SUM(Score) AS TotalScore,
+        ROW_NUMBER() OVER (PARTITION BY Dev_ID ORDER BY SUM(Score) DESC) AS Rank
+    FROM [Game Analysis].DBO.level_details2$
+    GROUP BY Dev_ID, P_ID
+)
+SELECT Dev_ID,P_ID,TotalScore
+FROM RankedScores
+WHERE Rank <= 3
+ORDER BY Dev_ID, TotalScore DESC;
+
+--14. Find players who scored more than 50% of the average score, scored by the sum of 
+--scores for each `P_ID`. 
+WITH PlayerTotalScores AS (
+    SELECT P_ID, SUM(Score) AS TotalScore
+    FROM [Game Analysis].DBO.level_details2$
+    GROUP BY P_ID
+),
+AverageScore AS (
+    SELECT AVG(TotalScore) AS AvgTotalScore
+    FROM PlayerTotalScores
+)
+SELECT sts.P_ID, sts.TotalScore
+FROM PlayerTotalScores sts
+JOIN AverageScore avg ON sts.TotalScore > 0.5 * avg.AvgTotalScore
+ORDER BY sts.P_ID;
+
+--15. Create a stored procedure to find the top `n` `headshots_count` based on each `Dev_ID` 
+--and rank them in increasing order using `Row_Number`. Display the difficulty as well.
+
+CREATE PROCEDURE GetTopNHeadshotsByDevID
+    @n INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    WITH RankedHeadshots AS (
+        SELECT Dev_ID,Headshots_count,Difficulty,
+            ROW_NUMBER() OVER (PARTITION BY Dev_ID ORDER BY Headshots_count ASC) AS Rank
+        FROM [Game Analysis].DBO.level_details2$
+    )
+    SELECT Dev_ID,Headshots_count,Difficulty
+    FROM RankedHeadshots
+    WHERE Rank <= @n
+    ORDER BY Dev_ID, Rank;
+END;
+GO
 
 
 
